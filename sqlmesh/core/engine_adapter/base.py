@@ -551,11 +551,13 @@ class EngineAdapter:
                     target_table,
                     source_queries,
                     target_columns_to_types,
+                    **kwargs,
                 )
         return self._insert_overwrite_by_condition(
             target_table,
             source_queries,
             target_columns_to_types,
+            **kwargs,
         )
 
     def create_index(
@@ -809,6 +811,7 @@ class EngineAdapter:
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
         expressions: t.Optional[t.List[exp.PrimaryKey]] = None,
         is_view: bool = False,
+        materialized: bool = False,
     ) -> exp.Schema:
         """
         Build a schema expression for a table, columns, column comments, and additional schema properties.
@@ -821,6 +824,7 @@ class EngineAdapter:
                 target_columns_to_types=target_columns_to_types,
                 column_descriptions=column_descriptions,
                 is_view=is_view,
+                materialized=materialized,
             )
             + expressions,
         )
@@ -830,6 +834,7 @@ class EngineAdapter:
         target_columns_to_types: t.Dict[str, exp.DataType],
         column_descriptions: t.Optional[t.Dict[str, str]] = None,
         is_view: bool = False,
+        materialized: bool = False,
     ) -> t.List[exp.ColumnDef]:
         engine_supports_schema_comments = (
             self.COMMENT_CREATION_VIEW.supports_schema_def
@@ -1258,7 +1263,11 @@ class EngineAdapter:
         schema: t.Union[exp.Table, exp.Schema] = exp.to_table(view_name)
         if target_columns_to_types:
             schema = self._build_schema_exp(
-                exp.to_table(view_name), target_columns_to_types, column_descriptions, is_view=True
+                exp.to_table(view_name),
+                target_columns_to_types,
+                column_descriptions,
+                is_view=True,
+                materialized=materialized,
             )
 
         properties = create_kwargs.pop("properties", None)
@@ -1614,7 +1623,7 @@ class EngineAdapter:
         **kwargs: t.Any,
     ) -> None:
         return self._insert_overwrite_by_condition(
-            table_name, source_queries, target_columns_to_types, where
+            table_name, source_queries, target_columns_to_types, where, **kwargs
         )
 
     def _values_to_sql(
