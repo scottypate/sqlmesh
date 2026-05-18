@@ -444,6 +444,9 @@ class SnapshotState:
             else:
                 next_auto_restatement_ts_filtered[k] = v
 
+        # Sort to ensure deterministic lock acquisition order across concurrent calls.
+        next_auto_restatement_ts_deleted.sort(key=lambda s: (s.name, s.version))
+
         for where in snapshot_name_version_filter(
             self.engine_adapter,
             next_auto_restatement_ts_deleted,
@@ -778,13 +781,21 @@ def _snapshots_to_df(snapshots: t.Iterable[Snapshot]) -> pd.DataFrame:
 def _auto_restatements_to_df(auto_restatements: t.Dict[SnapshotNameVersion, int]) -> pd.DataFrame:
     import pandas as pd
 
+    # Sort by (snapshot_name, snapshot_version) to ensure deterministic row ordering
+    # in the MERGE statement. Without this, concurrent ctx.run() calls produce MERGE
+    # VALUES in different order (due to non-deterministic dict iteration from unordered
+    # DB queries), causing PostgreSQL deadlocks when multiple threads lock the same rows
+    # in different sequences.
     return pd.DataFrame(
-        [
-            {
-                "snapshot_name": name_version.name,
-                "snapshot_version": name_version.version,
-                "next_auto_restatement_ts": ts,
-            }
-            for name_version, ts in auto_restatements.items()
-        ]
+        sorted(
+            [
+                {
+                    "snapshot_name": name_version.name,
+                    "snapshot_version": name_version.version,
+                    "next_auto_restatement_ts": ts,
+                }
+                for name_version, ts in auto_restatements.items()
+            ],
+            key=lambda r: (r["snapshot_name"], r["snapshot_version"]),
+        )
     )
