@@ -142,8 +142,6 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
         }
         if self._extra_config.get("maximum_bytes_billed") is not None:
             params["maximum_bytes_billed"] = self._extra_config.get("maximum_bytes_billed")
-        if self._extra_config.get("reservation") is not None:
-            params["reservation"] = self._extra_config.get("reservation")
         if self.correlation_id:
             # BigQuery label keys must be lowercase
             key = self.correlation_id.job_type.value.lower()
@@ -1108,8 +1106,12 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
             else []
         )
 
-        # Create job config
+        # Create job config with reservation support
         job_config = QueryJobConfig(**self._job_params, connection_properties=connection_properties)
+
+        reservation_id = self._extra_config.get("reservation_id")
+        if reservation_id:
+            job_config.reservation = reservation_id
 
         self._query_job = self._db_call(
             self.client.query,
