@@ -45,6 +45,8 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_AUTO_RESTATEMENTS_ADVISORY_LOCK_ID = 68577265
+
 
 class SnapshotState:
     SNAPSHOT_BATCH_SIZE = 1000
@@ -436,6 +438,15 @@ class SnapshotState:
         Args:
             next_auto_restatement_ts: A dictionary of snapshot name version to the next auto restatement timestamp.
         """
+        # Serialize concurrent callers on PostgreSQL to prevent deadlocks.
+        # MERGE/DELETE acquire row locks in heap-tuple physical order, which
+        # diverges across concurrent transactions due to MVCC tuple churn.
+        # Released when the enclosing @transactional facade transaction commits.
+        if self.engine_adapter.dialect == "postgres":
+            self.engine_adapter.execute(
+                f"SELECT pg_advisory_xact_lock({_AUTO_RESTATEMENTS_ADVISORY_LOCK_ID})"
+            )
+
         next_auto_restatement_ts_deleted = []
         next_auto_restatement_ts_filtered = {}
         for k, v in next_auto_restatement_ts.items():
