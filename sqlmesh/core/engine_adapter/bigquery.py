@@ -254,15 +254,38 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
                 (self.correlation_id.job_type.value.lower(), self.correlation_id.job_id)
             )
 
+        reservation_property = properties.get("reservation")
+        session_reservation: t.Optional[str] = None
+        if isinstance(reservation_property, exp.Literal) and reservation_property.is_string:
+            session_reservation = reservation_property.this
+        elif isinstance(reservation_property, str):
+            session_reservation = reservation_property
+        elif reservation_property is not None:
+            raise SQLMeshError(
+                "Invalid value for `session_properties.reservation`. Must be a string, e.g. "
+                "'projects/<project>/locations/<location>/reservations/<reservation>'."
+            )
+        if session_reservation is not None and not session_reservation.strip():
+            raise SQLMeshError("`session_properties.reservation` must not be empty.")
+        self._session_reservation = session_reservation
+
         if parsed_query_label:
             query_label_str = ",".join([":".join(label) for label in parsed_query_label])
             query = f'SET @@query_label = "{query_label_str}";SELECT 1;'
         else:
             query = "SELECT 1;"
 
+        # Note: `SET @@reservation` inside the session does not carry over to subsequent jobs
+        # that attach to the session, so the reservation is applied per job via the job config
+        # (see `_reservation_id`) rather than as a session statement.
+        job_config = QueryJobConfig(create_session=True)
+        reservation_id = self._reservation_id
+        if reservation_id:
+            job_config.reservation = reservation_id
+
         job = self.client.query(
             query,
-            job_config=QueryJobConfig(create_session=True),
+            job_config=job_config,
         )
         session_info = job.session_info
         session_id = session_info.session_id if session_info else None
@@ -271,6 +294,7 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
 
     def _end_session(self) -> None:
         self._session_id = None
+        self._session_reservation = None
 
     def _is_session_active(self) -> bool:
         return self._session_id is not None
@@ -580,6 +604,9 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
         from google.cloud import bigquery
 
         job_config = bigquery.job.LoadJobConfig(schema=self.__get_bq_schema(columns_to_types))
+        reservation_id = self._reservation_id
+        if reservation_id:
+            job_config.reservation = reservation_id
         if replace:
             job_config.write_disposition = bigquery.WriteDisposition.WRITE_TRUNCATE
         logger.info(f"Loading dataframe to BigQuery. Table Path: {table.path}")
@@ -1109,7 +1136,7 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
         # Create job config with reservation support
         job_config = QueryJobConfig(**self._job_params, connection_properties=connection_properties)
 
-        reservation_id = self._extra_config.get("reservation_id")
+        reservation_id = self._reservation_id
         if reservation_id:
             job_config.reservation = reservation_id
 
@@ -1337,6 +1364,21 @@ class BigQueryEngineAdapter(ClusteredByMixin, RowDiffMixin, GrantsFromInfoSchema
     @_session_id.setter
     def _session_id(self, value: t.Any) -> None:
         self._connection_pool.set_attribute("session_id", value)
+
+    @property
+    def _session_reservation(self) -> t.Optional[str]:
+        """The reservation requested via `session_properties.reservation` for the active session, if any."""
+        return self._connection_pool.get_attribute("session_reservation")
+
+    @_session_reservation.setter
+    def _session_reservation(self, value: t.Optional[str]) -> None:
+        self._connection_pool.set_attribute("session_reservation", value)
+
+    @property
+    def _reservation_id(self) -> t.Optional[str]:
+        """The reservation to run jobs in: the model's session-level reservation if set,
+        otherwise the gateway's `reservation_id` connection setting."""
+        return self._session_reservation or self._extra_config.get("reservation_id")
 
     def _get_current_schema(self) -> str:
         raise NotImplementedError("BigQuery does not support current schema")
