@@ -164,6 +164,27 @@ pip install "sqlmesh[bigquery]"
 | `job_retries`                   | The number of times to retry the underlying job if it fails. (Default: `1`)                                                                                       |  int   |    N     |
 | `priority`                      | The priority of the underlying job. (Default: `INTERACTIVE`)                                                                                                      | string |    N     |
 | `maximum_bytes_billed`          | The maximum number of bytes to be billed for the underlying job.                                                                                                  |  int   |    N     |
+| `reservation_id`                | The reservation to run all jobs in, e.g. `projects/<project>/locations/<location>/reservations/<name>`. Overrides the project-level assignment. See [Reservations](#reservations). | string |    N     |
+
+### Reservations
+
+BigQuery normally picks a reservation based on the assignment of the job's project. SQLMesh can target a specific reservation at two levels:
+
+- **Gateway level**: set `reservation_id` in the connection config. Every job SQLMesh runs through that gateway is submitted with that reservation.
+- **Model level**: set `reservation` in the model's [`session_properties`](../../concepts/models/overview.md#session_properties). While that model is being evaluated, SQLMesh submits every query and load job for the model with that reservation. This takes precedence over the gateway's `reservation_id`.
+
+```sql linenums="1"
+MODEL (
+  name my_schema.heavy_model,
+  session_properties (
+    reservation = 'projects/my-admin-project/locations/us-central1/reservations/heavy-jobs'
+  )
+);
+```
+
+Changing `reservation` is a metadata-only change, so it does not trigger a backfill.
+
+The reservation must be in the same organization and location as the job's execution project, and the credentials SQLMesh uses need the `bigquery.reservations.use` permission on the reservation or its administration project.
 
 ## Authentication Methods
 - [oauth](https://google-auth.readthedocs.io/en/master/reference/google.auth.html#google.auth.default) (default)

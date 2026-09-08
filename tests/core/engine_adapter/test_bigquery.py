@@ -584,6 +584,80 @@ def test_begin_end_session(mocker: MockerFixture):
             adapter.execute("SELECT 6;")
 
 
+def test_session_reservation(mocker: MockerFixture):
+    connection_mock = mocker.NonCallableMock()
+    cursor_mock = mocker.Mock()
+    cursor_mock.connection = connection_mock
+    connection_mock.cursor.return_value = cursor_mock
+
+    query_result_mock = mocker.Mock()
+    query_result_mock.total_rows = 0
+    job_mock = mocker.Mock()
+    job_mock.result.return_value = query_result_mock
+    connection_mock._client.query.return_value = job_mock
+
+    gateway_reservation = "projects/p/locations/us/reservations/default"
+    model_reservation = "projects/p/locations/us/reservations/heavy"
+
+    adapter = BigQueryEngineAdapter(
+        lambda: connection_mock, job_retries=0, reservation_id=gateway_reservation
+    )
+
+    # no session: jobs use the gateway reservation
+    adapter.execute("SELECT 1;")
+    assert connection_mock._client.query.call_args_list[0][1]["job_config"].reservation == (
+        gateway_reservation
+    )
+
+    # session without a reservation property: gateway reservation still applies
+    with adapter.session({}):
+        adapter.execute("SELECT 2;")
+    begin_call, execute_call = connection_mock._client.query.call_args_list[1:3]
+    assert begin_call[0][0] == "SELECT 1;"
+    assert begin_call[1]["job_config"].reservation == gateway_reservation
+    assert execute_call[1]["job_config"].reservation == gateway_reservation
+
+    # session with a reservation property: it is set on the session and overrides the gateway
+    with adapter.session(
+        {
+            "query_label": parse_one("[('key1', 'value1')]"),
+            "reservation": parse_one(f"'{model_reservation}'"),
+        }
+    ):
+        assert adapter._session_reservation == model_reservation
+        adapter.execute("SELECT 3;")
+    begin_call, execute_call = connection_mock._client.query.call_args_list[3:5]
+    assert begin_call[0][0] == 'SET @@query_label = "key1:value1";SELECT 1;'
+    assert begin_call[1]["job_config"].reservation == model_reservation
+    assert execute_call[1]["job_config"].reservation == model_reservation
+    assert execute_call[1]["job_config"].connection_properties[0].key == "session_id"
+
+    # session reservation is cleared once the session ends
+    assert adapter._session_reservation is None
+    adapter.execute("SELECT 4;")
+    assert connection_mock._client.query.call_args_list[5][1]["job_config"].reservation == (
+        gateway_reservation
+    )
+
+    # a gateway without reservation_id and a model with one
+    adapter_no_default = BigQueryEngineAdapter(lambda: connection_mock, job_retries=0)
+    with adapter_no_default.session({"reservation": parse_one(f"'{model_reservation}'")}):
+        adapter_no_default.execute("SELECT 5;")
+    assert connection_mock._client.query.call_args_list[7][1]["job_config"].reservation == (
+        model_reservation
+    )
+    adapter_no_default.execute("SELECT 6;")
+    assert connection_mock._client.query.call_args_list[8][1]["job_config"].reservation is None
+
+    # invalid reservation values
+    with pytest.raises(SQLMeshError, match="Invalid value for `session_properties.reservation`"):
+        with adapter.session({"reservation": parse_one("123")}):
+            adapter.execute("SELECT 7;")
+    with pytest.raises(SQLMeshError, match="must not be empty"):
+        with adapter.session({"reservation": parse_one("''")}):
+            adapter.execute("SELECT 8;")
+
+
 def _to_sql_calls(execute_mock: t.Any, identify: bool = True) -> t.List[str]:
     if isinstance(execute_mock, BigQueryEngineAdapter):
         execute_mock = execute_mock.execute
